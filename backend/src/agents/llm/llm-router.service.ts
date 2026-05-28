@@ -1,13 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export enum LLMProvider {
-  CLAUDE = 'claude',
-  GPT = 'gpt',
-  GEMINI = 'gemini',
+  OPENROUTER = 'openrouter',
 }
 
 export enum AgentRole {
@@ -21,23 +17,18 @@ export enum AgentRole {
   WRITER = 'writer',
 }
 
-// Default LLM per agent role
-const AGENT_LLM_MAP: Record<AgentRole, LLMProvider> = {
-  [AgentRole.PROJECT_MANAGER]: LLMProvider.CLAUDE,   // Raisonnement complexe
-  [AgentRole.ANALYST]: LLMProvider.GEMINI,            // Gros contextes
-  [AgentRole.ARCHITECT]: LLMProvider.CLAUDE,          // Raisonnement complexe
-  [AgentRole.BACKEND_DEV]: LLMProvider.GPT,           // Code
-  [AgentRole.FRONTEND_DEV]: LLMProvider.GPT,          // Code
-  [AgentRole.DEVOPS]: LLMProvider.GPT,                // Code + config
-  [AgentRole.QA]: LLMProvider.GPT,                    // Code + analyse
-  [AgentRole.WRITER]: LLMProvider.CLAUDE,             // Rédaction
+const AGENT_MODELS: Record<AgentRole, string> = {
+  [AgentRole.PROJECT_MANAGER]: 'qwen/qwen3-235b-a22b:free',
+  [AgentRole.ANALYST]:         'google/gemma-3-27b-it:free',
+  [AgentRole.ARCHITECT]:       'qwen/qwen3-235b-a22b:free',
+  [AgentRole.BACKEND_DEV]:     'meta-llama/llama-4-scout:free',
+  [AgentRole.FRONTEND_DEV]:    'meta-llama/llama-4-scout:free',
+  [AgentRole.DEVOPS]:          'meta-llama/llama-4-scout:free',
+  [AgentRole.QA]:              'deepseek/deepseek-r1-0528:free',
+  [AgentRole.WRITER]:          'qwen/qwen3-235b-a22b:free',
 };
 
-const FALLBACK_ORDER: LLMProvider[] = [
-  LLMProvider.CLAUDE,
-  LLMProvider.GPT,
-  LLMProvider.GEMINI,
-];
+const FALLBACK_MODEL = 'meta-llama/llama-4-maverick:free';
 
 export interface LLMMessage {
   role: 'user' | 'assistant' | 'system';
@@ -54,157 +45,61 @@ export interface LLMResponse {
 @Injectable()
 export class LLMRouterService {
   private readonly logger = new Logger(LLMRouterService.name);
-  private anthropic: Anthropic;
-  private openai: OpenAI;
-  private gemini: GoogleGenerativeAI;
-  private providerHealth: Map<LLMProvider, boolean> = new Map();
+  private client: OpenAI;
 
   constructor(private config: ConfigService) {
-    this.anthropic = new Anthropic({ apiKey: config.get('ANTHROPIC_API_KEY') });
-    this.openai = new OpenAI({ apiKey: config.get('OPENAI_API_KEY') });
-    this.gemini = new GoogleGenerativeAI(config.get('GEMINI_API_KEY'));
-
-    // Init all providers as healthy
-    Object.values(LLMProvider).forEach(p => this.providerHealth.set(p, true));
+    this.client = new OpenAI({
+      baseURL: 'https://openrouter.ai/api/v1',
+      apiKey: config.get('OPENROUTER_API_KEY'),
+      defaultHeaders: {
+        'HTTP-Referer': config.get('APP_URL', 'https://localhost'),
+        'X-Title': 'Multi-Agent System',
+      },
+    });
   }
 
   getPreferredProvider(role: AgentRole): LLMProvider {
-    return AGENT_LLM_MAP[role] || LLMProvider.CLAUDE;
+    return LLMProvider.OPENROUTER;
+  }
+
+  getProvidersStatus(): Record<LLMProvider, boolean> {
+    return { [LLMProvider.OPENROUTER]: true };
   }
 
   async complete(
     messages: LLMMessage[],
     role: AgentRole,
-    options?: {
-      provider?: LLMProvider;
-      maxTokens?: number;
-      temperature?: number;
-    }
+    options?: { provider?: LLMProvider; maxTokens?: number; temperature?: number }
   ): Promise<LLMResponse> {
-    const preferred = options?.provider || this.getPreferredProvider(role);
-    const order = this.buildFallbackOrder(preferred);
-
-    for (const provider of order) {
-      if (!this.providerHealth.get(provider)) continue;
-      try {
-        const result = await this.callProvider(provider, messages, options);
-        this.providerHealth.set(provider, true);
-        return result;
-      } catch (err) {
-        this.logger.warn(`Provider ${provider} failed: ${err.message}. Trying fallback...`);
-        this.providerHealth.set(provider, false);
-        // Auto-recover after 60s
-        setTimeout(() => this.providerHealth.set(provider, true), 60_000);
-      }
+    const model = AGENT_MODELS[role] || FALLBACK_MODEL;
+    try {
+      return await this.callModel(model, messages, options);
+    } catch (err) {
+      this.logger.warn(`Model ${model} failed: ${err.message}. Fallback...`);
+      return await this.callModel(FALLBACK_MODEL, messages, options);
     }
-
-    throw new Error('All LLM providers failed');
   }
 
-  private buildFallbackOrder(preferred: LLMProvider): LLMProvider[] {
-    return [preferred, ...FALLBACK_ORDER.filter(p => p !== preferred)];
-  }
-
-  private async callProvider(
-    provider: LLMProvider,
+  private async callModel(
+    model: string,
     messages: LLMMessage[],
     options?: { maxTokens?: number; temperature?: number }
   ): Promise<LLMResponse> {
-    const maxTokens = options?.maxTokens || 4096;
-    const temperature = options?.temperature ?? 0.7;
-
-    switch (provider) {
-      case LLMProvider.CLAUDE:
-        return this.callClaude(messages, maxTokens, temperature);
-      case LLMProvider.GPT:
-        return this.callGPT(messages, maxTokens, temperature);
-      case LLMProvider.GEMINI:
-        return this.callGemini(messages, maxTokens, temperature);
-    }
-  }
-
-  private async callClaude(
-    messages: LLMMessage[],
-    maxTokens: number,
-    temperature: number
-  ): Promise<LLMResponse> {
-    const system = messages.find(m => m.role === 'system')?.content || '';
-    const conv = messages.filter(m => m.role !== 'system');
-
-    const response = await this.anthropic.messages.create({
-      model: 'claude-opus-4-5',
-      max_tokens: maxTokens,
-      temperature,
-      system,
-      messages: conv as any,
-    });
-
-    const content = response.content[0].type === 'text' ? response.content[0].text : '';
-    return {
-      content,
-      provider: LLMProvider.CLAUDE,
-      model: response.model,
-      tokens: {
-        input: response.usage.input_tokens,
-        output: response.usage.output_tokens,
-      },
-    };
-  }
-
-  private async callGPT(
-    messages: LLMMessage[],
-    maxTokens: number,
-    temperature: number
-  ): Promise<LLMResponse> {
-    const response = await this.openai.chat.completions.create({
-      model: 'gpt-4o',
-      max_tokens: maxTokens,
-      temperature,
+    const response = await this.client.chat.completions.create({
+      model,
       messages: messages as any,
+      max_tokens: options?.maxTokens || 2048,
+      temperature: options?.temperature ?? 0.7,
     });
 
     return {
       content: response.choices[0].message.content || '',
-      provider: LLMProvider.GPT,
+      provider: LLMProvider.OPENROUTER,
       model: response.model,
       tokens: {
         input: response.usage?.prompt_tokens || 0,
         output: response.usage?.completion_tokens || 0,
       },
     };
-  }
-
-  private async callGemini(
-    messages: LLMMessage[],
-    maxTokens: number,
-    temperature: number
-  ): Promise<LLMResponse> {
-    const model = this.gemini.getGenerativeModel({
-      model: 'gemini-1.5-pro',
-      generationConfig: { maxOutputTokens: maxTokens, temperature },
-    });
-
-    const history = messages
-      .filter(m => m.role !== 'system')
-      .slice(0, -1)
-      .map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
-      }));
-
-    const lastMsg = messages[messages.length - 1];
-    const chat = model.startChat({ history });
-    const result = await chat.sendMessage(lastMsg.content);
-
-    return {
-      content: result.response.text(),
-      provider: LLMProvider.GEMINI,
-      model: 'gemini-1.5-pro',
-      tokens: { input: 0, output: 0 }, // Gemini doesn't always return token counts
-    };
-  }
-
-  getProvidersStatus(): Record<LLMProvider, boolean> {
-    return Object.fromEntries(this.providerHealth) as Record<LLMProvider, boolean>;
   }
 }
