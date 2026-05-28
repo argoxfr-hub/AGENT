@@ -13,6 +13,8 @@
     "test": "jest"
   },
   "dependencies": {
+    "class-validator": "^0.14.1",
+    "class-transformer": "^0.5.1",
     "@anthropic-ai/sdk": "^0.36.3",
     "@google/generative-ai": "^0.21.0",
     "@nestjs/common": "^10.3.0",
