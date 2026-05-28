@@ -80,9 +80,9 @@ export class OrchestrationService {
     if (!state) return;
 
     while (
-      state.currentNode !== WorkflowNodeType.COMPLETE &&
-      state.iteration < this.MAX_ITERATIONS
-    ) {
+  (state.currentNode as string) !== WorkflowNodeType.COMPLETE &&
+  state.iteration < this.MAX_ITERATIONS
+) {
       state.iteration++;
       this.logger.log(`[${missionId}] Node: ${state.currentNode} (iter ${state.iteration})`);
 
