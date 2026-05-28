@@ -14,9 +14,10 @@ import { AgentsService } from './agents.service';
 import { AgentsController } from './agents.controller';
 import { LogsModule } from '../logs/logs.module';
 import { MemoryModule } from '../memory/memory.module';
+import { EventsModule } from '../events/events.module';
 
 @Module({
-  imports: [LogsModule, MemoryModule],
+  imports: [LogsModule, MemoryModule, EventsModule],
   providers: [
     LLMRouterService,
     ProjectManagerAgent,
