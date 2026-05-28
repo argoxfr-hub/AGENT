@@ -6,6 +6,7 @@ import { TaskEntity } from '../tasks/task.entity';
 import { AgentsModule } from '../agents/agents.module';
 import { LogsModule } from '../logs/logs.module';
 import { MessagingModule } from '../messaging/messaging.module';
+import { EventsModule } from '../events/events.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { MessagingModule } from '../messaging/messaging.module';
     AgentsModule,
     LogsModule,
     MessagingModule,
+    EventsModule,
   ],
   providers: [OrchestrationService],
   exports: [OrchestrationService],
