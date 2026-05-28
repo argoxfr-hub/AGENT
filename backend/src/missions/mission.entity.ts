@@ -2,8 +2,8 @@ import {
   Entity, PrimaryGeneratedColumn, Column,
   CreateDateColumn, UpdateDateColumn, OneToMany,
 } from 'typeorm';
-import { TaskEntity } from '../../tasks/task.entity';
-import { LogEntity } from '../../logs/log.entity';
+import { TaskEntity } from '../tasks/task.entity';
+import { LogEntity } from '../logs/log.entity';
 
 export enum MissionStatus {
   WAITING    = 'waiting',
